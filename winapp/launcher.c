@@ -28,6 +28,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <time.h>
 #include <stdio.h>
 #include <wchar.h>
 
@@ -292,10 +293,12 @@ static int find_edge(wchar_t *out, int cap)
 
 static void open_window(int port)
 {
-    wchar_t url[64], edge[MAX_PATH], args[128];
-    swprintf(url, 64, L"http://127.0.0.1:%d/", port);
+    /* 附加时间戳参数：单文件 HTML 更新后 Edge/WebView 可能命中旧版缓存
+     *（表现为「已重新安装仍是旧数据」）。新 URL 必然回源。 */
+    wchar_t url[96], edge[MAX_PATH], args[160];
+    swprintf(url, 96, L"http://127.0.0.1:%d/?t=%lu", port, (unsigned long)time(NULL));
     if (find_edge(edge, MAX_PATH)) {
-        swprintf(args, 128, L"--app=%ls --window-size=1280,840", url);
+        swprintf(args, 160, L"--app=%ls --window-size=1280,840", url);
         ShellExecuteW(NULL, L"open", edge, args, NULL, SW_SHOWNORMAL);
     } else {
         ShellExecuteW(NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL);
@@ -318,7 +321,7 @@ static void write_blocked_flag(void)
  * 也能完整使用阅读/搜索/划线/笔记（数据存浏览器 localStorage） */
 static void open_file_mode(void)
 {
-    wchar_t path[500], url[1300], edge[MAX_PATH], args[1350];
+    wchar_t path[500], url[1300], final_url[1400], edge[MAX_PATH], args[1450];
     int i, j;
 
     swprintf(path, 500, L"%ls\\app\\巴菲特投资智慧.html", g_appdir);
@@ -327,12 +330,14 @@ static void open_file_mode(void)
     for (i = 0; path[i] && j < 1280; i++)
         url[j++] = (path[i] == L'\\') ? L'/' : path[i];
     url[j] = 0;
+    /* 带时间戳，避免浏览器缓存旧版 HTML（离线模式同样需要） */
+    swprintf(final_url, 1400, L"%ls?t=%lu", url, (unsigned long)time(NULL));
 
     if (find_edge(edge, MAX_PATH)) {
-        swprintf(args, 1350, L"--app=%ls", url);
+        swprintf(args, 1450, L"--app=%ls", final_url);
         ShellExecuteW(NULL, L"open", edge, args, NULL, SW_SHOWNORMAL);
     } else {
-        ShellExecuteW(NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL);
+        ShellExecuteW(NULL, L"open", final_url, NULL, NULL, SW_SHOWNORMAL);
     }
     MessageBoxW(NULL,
                 L"本地服务未能启动或已被安全软件终止，已改用离线模式打开。\n\n"

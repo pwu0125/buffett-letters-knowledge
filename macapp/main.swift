@@ -24,7 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         ensureService { [weak self] serviceURL in
             guard let self = self else { return }
             if let serviceURL = serviceURL {
-                self.webView.load(URLRequest(url: serviceURL))
+                self.webView.load(URLRequest(url: self.cacheBustingURL(serviceURL)))
             } else {
                 self.showFatal("本地服务启动失败。\n\n请确认已安装 Command Line Tools：\n  xcode-select --install\n\n或检查 127.0.0.1:8666–8685 是否全部被占用。")
             }
@@ -33,6 +33,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+
+    /// 加载页面时附带时间戳参数：单文件 HTML 更新后，WKWebView 可能按启发式规则
+    /// 命中旧版缓存（表现为「已更新仍是旧数据」）。新 URL 必然回源，同时服务端
+    /// 也已统一返回禁缓存头。
+    private func cacheBustingURL(_ url: URL) -> URL {
+        let sep = url.absoluteString.contains("?") ? "&" : "?"
+        let stamp = Int(Date().timeIntervalSince1970)
+        return URL(string: url.absoluteString + sep + "t=" + String(stamp)) ?? url
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationPending, webView?.url != nil else {
