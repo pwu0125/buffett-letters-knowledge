@@ -1665,7 +1665,7 @@ function renderHome(){
         '<div><b>'+nLetters+'</b><span>封信件</span></div>'+
         '<div><b>'+nTags.size+'</b><span>主题标签</span></div>'+
       '</div>'+
-      '<div class="hh-chart-wrap"><div class="hh-chart" id="heroChart"></div><div class="chart-note">口径：1957–1964 合伙基金收益率｜1965–2018 伯克希尔每股账面价值变动率（Book Value）｜2019–2025 每股市场价值变动率（官方年报业绩表）</div></div>'+
+      '<div class="hh-chart-wrap"><div class="hh-chart" id="heroChart"></div><div class="chart-note">口径：1957–1964 合伙基金收益率｜1965–2025 伯克希尔每股账面价值变动率（Book Value；2019–2025 按 10-K 股东权益 ÷ A 股等值股本推算）</div></div>'+
       '<div class="hh-search"><input id="homeQ" placeholder="搜索文章、概念、公司、人物…" autocomplete="off"><button id="homeQGo">搜索</button></div>'+
     '</div>'+
     '<div class="chat-entry" data-chat="1">'+
