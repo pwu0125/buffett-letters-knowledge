@@ -25,7 +25,15 @@
 """
 
 import argparse
+import gzip
+import html as html_mod
 import http.server
+import ipaddress
+import re
+import socket
+import urllib.parse
+import urllib.request
+import zlib
 from urllib.parse import quote, unquote
 import json
 import os
@@ -106,6 +114,166 @@ def resolve_llm_config():
     return {"base": base, "key": key, "model": model}
 
 
+# ===================== 联网检索 / 网页抓取（问答 AI 的研究工具） =====================
+# 密钥来源：客户端设置面板填写（随请求头传入，不落盘）→ 环境变量 → 项目根 .env
+SEARCH_PROVIDERS = {
+    "bocha": {"env": "BOCHA_API_KEY", "label": "博查"},
+    "tavily": {"env": "TAVILY_API_KEY", "label": "Tavily"},
+}
+FETCH_MAX_BYTES = 400_000
+FETCH_MAX_CHARS = 20000
+FETCH_TIMEOUT = 15
+# 部分环境（企业代理 / 沙箱）会把公网域名解析到内网地址，导致抓取被 SSRF 防护拦下。
+# 此时可设 BUFFETT_FETCH_ALLOW_PRIVATE=1 显式放开（默认保持严格防护）。
+FETCH_ALLOW_PRIVATE = (os.environ.get("BUFFETT_FETCH_ALLOW_PRIVATE", "").strip().lower()
+                       in ("1", "true", "yes"))
+try:                       # 可选依赖：装了 brotli 才能解 br 压缩响应
+    import brotli as _brotli
+except ImportError:
+    _brotli = None
+
+
+def resolve_search_key(client_key="", provider=""):
+    """返回 (provider, key)：客户端密钥优先，其次该 provider 的环境变量/.env。"""
+    client_key = (client_key or "").strip()
+    provider = (provider or "").strip().lower()
+    env = load_root_env()
+    if provider in SEARCH_PROVIDERS:
+        names = [provider]
+    else:
+        names = ["bocha", "tavily"]
+    for name in names:
+        env_key = (os.environ.get(SEARCH_PROVIDERS[name]["env"])
+                   or env.get(SEARCH_PROVIDERS[name]["env"]) or "").strip()
+        if env_key:
+            return name, (client_key or env_key)
+    if client_key:
+        return (provider if provider in SEARCH_PROVIDERS else "bocha"), client_key
+    return "", ""
+
+
+def _post_json(url, payload, headers, timeout=FETCH_TIMEOUT):
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+
+def web_search(query, count=5, key="", provider="bocha"):
+    """统一结构的联网检索：返回 {results:[{title,url,snippet}], message}。"""
+    query = (query or "").strip()
+    if not query:
+        return {"results": [], "message": "缺少检索词"}
+    try:
+        count = max(1, min(int(count or 5), 8))
+    except (TypeError, ValueError):
+        count = 5
+    if not key:
+        return {"results": [], "message":
+                "未配置联网检索密钥：可在应用「设置」面板填写搜索 API Key（博查/Tavily），"
+                "或设置环境变量 BOCHA_API_KEY / TAVILY_API_KEY 后重启本地服务。"}
+    try:
+        if provider == "tavily":
+            j = _post_json("https://api.tavily.com/search",
+                           {"api_key": key, "query": query, "max_results": count,
+                            "search_depth": "basic"},
+                           {"Content-Type": "application/json"})
+            items = [{"title": x.get("title", ""), "url": x.get("url", ""),
+                      "snippet": (x.get("content") or "")[:400]}
+                     for x in (j.get("results") or [])]
+        else:
+            j = _post_json("https://api.bochaai.com/v1/web-search",
+                           {"query": query, "summary": True, "count": count},
+                           {"Content-Type": "application/json",
+                            "Authorization": "Bearer " + key})
+            pages = (((j.get("data") or {}).get("webPages") or {}).get("value")) or []
+            items = [{"title": x.get("name", ""), "url": x.get("url", ""),
+                      "snippet": (x.get("summary") or x.get("snippet") or "")[:400]}
+                     for x in pages]
+        if not items:
+            return {"results": [], "message": "联网检索无结果（可换关键词重试）"}
+        return {"results": items[:count], "message": ""}
+    except Exception as e:                                    # noqa: BLE001
+        return {"results": [], "message": "联网检索失败：%s" % e}
+
+
+def _host_is_public(host):
+    """拒绝 loopback/内网/保留地址，避免本地服务被当作 SSRF 跳板。"""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    for info in infos:
+        try:
+            addr = ipaddress.ip_address(info[4][0])
+        except ValueError:
+            return False
+        if (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_reserved or addr.is_multicast or addr.is_unspecified):
+            return False
+    return True
+
+
+def fetch_page(url):
+    """抓取网页并抽取正文：返回 {title, text}。仅允许公网 http/https。"""
+    parsed = urllib.parse.urlparse(url or "")
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return {"title": "", "text": "", "message": "仅支持 http/https 网址"}
+    if not FETCH_ALLOW_PRIVATE and not _host_is_public(parsed.hostname):
+        return {"title": "", "text": "", "message":
+                "拒绝访问内网或本机地址（如确认目标为公网、且本机使用代理，"
+                "可设 BUFFETT_FETCH_ALLOW_PRIVATE=1 后重启本地服务）"}
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (compatible; BuffettWisdom/1.0; +local-research)",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Accept-Encoding": "gzip, deflate",
+        })
+        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
+            raw = resp.read(FETCH_MAX_BYTES)
+            charset = resp.headers.get_content_charset() or "utf-8"
+            encoding = (resp.headers.get("Content-Encoding") or "").lower()
+    except Exception as e:                                    # noqa: BLE001
+        return {"title": "", "text": "", "message": "抓取失败：%s" % e}
+    # 解压：按响应头 / 魔数处理 gzip、deflate；brotli 仅在已安装第三方库时支持
+    if "br" in encoding and raw[:2] != b"\x1f\x8b":
+        if _brotli:
+            try:
+                raw = _brotli.decompress(raw)
+            except Exception:                                  # noqa: BLE001
+                return {"title": "", "text": "", "message": "该站点返回 Brotli 压缩内容，解压失败"}
+        else:
+            return {"title": "", "text": "", "message":
+                    "该站点返回 Brotli（br）压缩内容，本机 Python 无法解压；"
+                    "可运行 python3 -m pip install brotli 后重启服务，或改用 web_search 的摘要/其他来源"}
+    try:
+        if "gzip" in encoding or raw[:2] == b"\x1f\x8b":
+            raw = gzip.decompress(raw)
+        elif "deflate" in encoding:
+            raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+    except Exception:                                          # noqa: BLE001
+        pass
+    if raw[:5] == b"%PDF-":
+        return {"title": "", "text": "", "message":
+                "该网址是 PDF 文件，暂不支持直接解析正文；可改用 web_search 摘要，"
+                "或查阅本地知识库中对应的信件/文章"}
+    page = raw.decode(charset, errors="replace")
+    title = ""
+    m = re.search(r"<title[^>]*>(.*?)</title>", page, re.S | re.I)
+    if m:
+        title = re.sub(r"\s+", " ", html_mod.unescape(m.group(1))).strip()[:200]
+    text = re.sub(r"(?is)<(script|style|noscript|svg|head)[^>]*>.*?</\1>", " ", page)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", html_mod.unescape(text)).strip()
+    if not text:
+        return {"title": title, "text": "", "message": "页面正文为空（可能需要登录或被反爬拦截）"}
+    # 乱码检测：解码失败率过高时不把垃圾喂给模型
+    if text.count("\ufffd") > max(20, len(text) * 0.05):
+        return {"title": title, "text": "", "message":
+                "页面内容无法正确解码（可能是压缩或编码异常），请改用其他来源"}
+    return {"title": title, "text": text[:FETCH_MAX_CHARS], "message": ""}
+
+
 class Handler(http.server.SimpleHTTPRequestHandler):
     """应用静态入口 + 同源配置/状态 API。"""
 
@@ -177,10 +345,33 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             cfg["app"] = "buffett-wisdom"
             self._send_json(cfg, {"Cross-Origin-Resource-Policy": "same-origin"})
             return
+        if path == "/api/websearch":
+            self._handle_websearch()
+            return
+        if path == "/api/fetch":
+            self._handle_fetch()
+            return
         if not self._prepare_static_path(path):
             self.send_error(404)
             return
         return super().do_GET()
+
+    # ---------- 问答 AI 的研究工具：联网检索 / 网页抓取 ----------
+    def _query_params(self):
+        qs = urllib.parse.urlsplit(self.path).query
+        return {k: v[0] for k, v in urllib.parse.parse_qs(qs).items()}
+
+    def _handle_websearch(self):
+        params = self._query_params()
+        provider, key = resolve_search_key(self.headers.get("X-Search-Api-Key", ""),
+                                           self.headers.get("X-Search-Provider", ""))
+        out = web_search(params.get("q", ""), params.get("k", 5), key, provider or "bocha")
+        out["provider"] = SEARCH_PROVIDERS.get(provider, {}).get("label", "")
+        self._send_json(out)
+
+    def _handle_fetch(self):
+        params = self._query_params()
+        self._send_json(fetch_page(params.get("url", "")))
 
     def do_HEAD(self):
         if self._reject_bad_host():

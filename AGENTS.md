@@ -118,6 +118,18 @@ BUFFETT_DATA_DIR="$(mktemp -d)" python3 serve_buffett_app.py --port 8876 --no-br
 - `.env`、`*.env`、API Key 和真实用户状态不得提交或暴露。`*.log` 与 `.buffett-data/` 不得提交；诊断时只报告与问题直接相关且已脱敏的日志片段。应用设置中手动填写的 Key 只应留在浏览器 localStorage；服务端 Key 只从环境变量或项目根 `.env` 读取，经 `/api/llm-config` 注入页面内存，不回填 localStorage。静态服务只应暴露应用 HTML、无密钥 `llm-config.js` 和图标，不得开放任意仓库文件。
 - 除非任务明确要求真实连接，不发送真实 LLM 请求；UI/服务烟测使用空 Key 或 dummy Key，并避免点击“测试连接”。
 
+## 问答 AI 的研究工具合同
+
+问答 AI（文章讨论、巴菲特/芒格对话）必须保持“先查证再回答”的能力，改动时不要退化回单轮问答：
+
+- **工具协议**：模型在回复中输出 ```tool 代码块（JSON 数组，`[{"tool":"…","args":{…}}]`）请求工具；前端解析执行后以 user 消息回灌 `【工具结果】`，循环至多 5 轮（`RESEARCH.maxRounds`），最后按「结论—证据链—口径与局限—可操作建议」作答。工具名与参数是前后端合同，改名需同步 `RESEARCH_TOOLS`、`RESEARCH_PROMPT` 与本文档。
+- **工具集**：`search_articles`（全库检索）、`read_article`（精读全文）、`search_index`（年度/主题/行业/事件/方法索引）、`get_returns`（1957–2025 收益序列与口径）、`web_search`、`fetch_url`。除联网两个外全部在前端本地执行，不依赖服务端。
+- **预检索**：每次提问前用 `prefetchContext()` 自动检索一次全库并注入上下文，保证即使模型不主动调工具也能跨文章作答；不要删除这条路径。
+- **作答标准**：`RESEARCH_PROMPT` 必须同时注入文章问答与人格对话的系统提示；其中“数字必须取数、口径必须写明、冲突必须解释、语料没有必须声明”是核心约束。
+- **联网端点**：`/api/websearch`（博查/Tavily，`X-Search-Provider`/`X-Search-Api-Key` 头或 `BOCHA_API_KEY`/`TAVILY_API_KEY` 环境变量与 `.env`）与 `/api/fetch`（抓取正文，内含 gzip/deflate、可选 brotli、PDF 与乱码检测）。两者仅 loopback + Host 校验可访问；密钥不落盘、不写入状态。
+- **抓取安全**：默认拒绝内网/本机地址（SSRF 防护）；`BUFFETT_FETCH_ALLOW_PRIVATE=1` 仅在代理环境显式放开。不要把 `_host_is_public` 检查直接删除。
+- **验证方式**（无真实 LLM 也可验证）：`python3 build_buffett_app.py --debug --no-llm-config` 后，提取含 `RESEARCH_TOOLS` 的 script 块做 `node --check`；再复制 HTML 注入一段调用 `toolSearchArticles/toolReadArticle/toolSearchIndex/toolGetReturns/parseToolCalls` 的测试脚本，用 headless Chrome `--dump-dom` 抓取结果核对（本项目已验证该方法可用）。
+
 ## 平台打包
 
 两个打包脚本都只复制现有 `巴菲特投资智慧.html`，不会调用构建器；`release.py --build` 也只调用两个打包脚本。任何会影响 HTML 的源变更都必须先完成常规重建，再打包。
@@ -165,6 +177,7 @@ python3 package_windows.py --version X.Y
 | 仅文档 | `git diff --check`，人工核对路径和命令 |
 | 知识 Markdown / XLSX / CSV / 人格 / 前端构建器 | `python3 build_buffett_app.py --debug --no-llm-config`，检查警告、基线和生成 diff；仅在渲染、链接、索引、图表或人格行为受影响时浏览器冒烟相关页面 |
 | `serve_buffett_app.py` 或状态合同 | Python 语法检查；隔离 `BUFFETT_DATA_DIR` 的 GET 与 PUT/GET 烟测 |
+| 问答 AI / 研究工具 / 联网端点 | 提取含 `RESEARCH_TOOLS` 的 JS 做 `node --check`；headless Chrome 注入测试脚本核对工具返回；对 `/api/fetch` 验证公网抓取、PDF 与 SSRF 拒绝路径 |
 | `启动巴菲特知识库.command` | `zsh -n 启动巴菲特知识库.command` |
 | `macapp/main.swift` | `xcrun swiftc -typecheck -swift-version 5 -target arm64-apple-macos12.0 macapp/main.swift -framework Cocoa -framework WebKit`；交付安装包时再做目标机验证 |
 | `winapp/*.c` / NSIS / Windows 打包器 | 有依赖时做对应编译/打包；交付时在 Windows 10/11 验收 |

@@ -692,7 +692,7 @@ mark.hl.underline{background:transparent;text-decoration:underline;text-decorati
             <div class="ai-chips" id="aiChips"></div>
             <div class="ai-status" id="aiStatus"></div>
             <div class="ai-input" id="aiInput" style="display:none">
-              <textarea id="aiInputBox" rows="1" placeholder="问 AI：这段思想如何应用到我的股票投资？"></textarea>
+              <textarea id="aiInputBox" rows="1" placeholder="问 AI：可检索全库 188 篇 + 联网核实（如「2022 年为何负增长？」）"></textarea>
               <button id="aiSend">发送</button>
             </div>
           </div>
@@ -765,6 +765,17 @@ mark.hl.underline{background:transparent;text-decoration:underline;text-decorati
     <div class="field">
       <label>模型</label>
       <input type="text" id="setModel" placeholder="deepseek-v4-flash">
+    </div>
+    <div class="field">
+      <label>联网检索（可选，供问答 AI 查证语料之外的事实）</label>
+      <div style="display:flex;gap:8px">
+        <select id="setSearchProvider" style="width:118px;border:1px solid var(--line);border-radius:9px;padding:8px 9px;background:var(--bg);color:inherit">
+          <option value="bocha">博查 Bocha</option>
+          <option value="tavily">Tavily</option>
+        </select>
+        <input type="password" id="setSearchKey" placeholder="搜索 API Key（留空则用服务端环境变量）" style="flex:1">
+      </div>
+      <div class="hint">联网检索需本地服务运行（macOS/Windows 应用内置）。Key 只存本机浏览器 localStorage。</div>
     </div>
     <div class="hint" id="setHint"></div>
     <div class="hint" style="color:#15803d" id="setTestResult"></div>
@@ -2220,7 +2231,7 @@ function toggleAiNote(m,btn,id){
   }
   renderNotesPanel();
 }
-function buildAiMessages(userText){
+function buildAiMessages(userText, prefetch){
   const a=BYID[state.cur];
   const plain=plainOf(a).slice(0,14000);
   const n=notesOf(a.id);
@@ -2230,18 +2241,21 @@ function buildAiMessages(userText){
   const sys=[
     '你是「巴菲特投资智慧助教」，服务于一位 A 股量化投资者（使用选股因子、仓位管理、回测与择时信号体系）。',
     '任务：帮助用户把巴菲特致股东信中的思想，结合到其股票投资实践中。',
+    '资料范围：你面前有全部 188 篇文章（含 1956–2025 全部信件、概念/公司/人物词条）、五维分类索引、以及 1957–2025 权威收益数据；可用工具检索与精读，必要时联网核实。用户当前正在阅读的【当前文章】只是起点，不必局限于此篇。',
     '规则：',
-    '1. 严格基于【当前文章】的原文回答；引用原文用「」括起，不得编造巴菲特没有表达过的观点；',
+    '1. 引用原文必须来自语料（可用 search_articles/read_article 检索全库核对），用「」括起，不得编造巴菲特没有表达过的观点；',
     '2. 每条建议给出「可操作步骤」或「如何验证」（如转化为选股条件、过滤规则、回测假设、仓位规则、风控阈值）；',
-    '3. 若文章内容不足以支撑问题，明确说明，并给出合理推演框架；',
+    '3. 语料不足以支撑问题时，明确说明并给出合理推演框架（标注为推演）；外部事实可联网核实并注明来源；',
     '4. 注意巴菲特思想与 A 股市场（散户结构、涨跌停、T+1、政策市、行业轮动快）的差异并给出适配建议；',
     '5. 中文回答，分点清晰，篇幅适中。',
+    RESEARCH_PROMPT,
   ].join('\n');
   const ctx=[
     '【当前文章】标题：《'+a.title+'》｜分类：'+(CAT_NAME[a.catKey]||'')+(a.year?'｜年份：'+a.year:''),
     '【文章内容】',
     plain,
     notes.length?('【用户在这篇文章的笔记/高亮】\n'+notes.join('\n')):'',
+    prefetch||'',
   ].filter(Boolean).join('\n\n');
   const msgs=[
     {role:'system',content:sys},
@@ -2260,7 +2274,7 @@ async function sendAi(){
   if(!text){ toast('请输入问题'); return; }
   if(!settingsOk()){ openSettings(); return; }
   const id=state.cur;
-  const requestMessages=buildAiMessages(text); // 此时历史中尚未加入当前问题，避免重复发送
+  const requestMessages=buildAiMessages(text, prefetchContext(text, (BYID[state.cur]||{}).title||'')); // 此时历史中尚未加入当前问题，避免重复发送
   const msgs=chatOf(id);
   msgs.push({role:'user',content:text,quote:currentSelection()||'',ts:Date.now()});
   const aidMsg={role:'assistant',content:'',pending:true,ts:Date.now()};
@@ -2273,15 +2287,20 @@ async function sendAi(){
   $('#aiStatus').textContent='思考中…（'+(settings().model.split('/').pop()||'')+'）';
   let saveTimer=null;
   try{
-    const reply=await callLLMStream(requestMessages, acc=>{
-      aidMsg.content=acc;
-      if(state.cur===id){
-        const el=$('#aiMsgs .ai-msg.assistant:last-of-type');
-        if(el) el.innerHTML=mdRich(acc);
-      }
-      if(!saveTimer){ saveTimer=setTimeout(()=>{ saveChat(id,msgs); saveTimer=null; },500); }
+    const res=await runResearchLoop({
+      messages:requestMessages,
+      onStatus:s=>{ if(state.cur===id) $('#aiStatus').textContent=s; },
+      onDelta:acc=>{
+        aidMsg.content=acc;
+        if(state.cur===id){
+          const el=$('#aiMsgs .ai-msg.assistant:last-of-type');
+          if(el) el.innerHTML=mdRich(acc);
+        }
+        if(!saveTimer){ saveTimer=setTimeout(()=>{ saveChat(id,msgs); saveTimer=null; },500); }
+      },
     });
-    aidMsg.content=reply; aidMsg.pending=false;
+    aidMsg.content=res.text+traceMarkdown(res.trace,res.rounds);
+    aidMsg.pending=false;
     clearTimeout(saveTimer);
     saveChat(id,msgs);
     if(state.cur===id) renderChatPanel();
@@ -2381,6 +2400,240 @@ async function callLLMStream(messages, onDelta){
   return full;
 }
 
+/* ================= 研究工具：问答 AI 的检索 / 精读 / 取数 / 联网能力 =================
+   模型在回复中输出 ```tool 代码块请求工具；前端执行后把结果回灌，循环至多 5 轮，
+   最后按「结论—证据链—口径与局限—可操作建议」的标准作答。 */
+const RESEARCH={maxRounds:5, resultChars:9000};
+const searchCreds=()=>{ const s=store.get(SETTINGS_KEY,{}); return {key:(s.searchKey||'').trim(), provider:(s.searchProvider||'bocha')}; };
+function webSearchHeaders(){ const c=searchCreds(); const h={}; if(c.provider) h['X-Search-Provider']=c.provider; if(c.key) h['X-Search-Api-Key']=c.key; return h; }
+
+function toolSearchArticles(args){
+  const q=(args.query||args.q||'').toString().trim().toLowerCase();
+  if(!q) return '缺少 query 参数';
+  const k=Math.min(Math.max(parseInt(args.k)||6,1),10);
+  const terms=q.split(/[\s,，]+/).filter(Boolean);
+  const hits=[];
+  for(const a of ART){
+    const title=a.title.toLowerCase(), tags=(a.tags||[]).join(' ').toLowerCase();
+    const plain=plainOf(a).toLowerCase();
+    let score=0, first=-1;
+    for(const t of terms){
+      if(!t) continue;
+      if(title.includes(t)) score+=120;
+      if(tags.includes(t)) score+=50;
+      const p=plain.indexOf(t);
+      if(p>=0){ score+=Math.max(0,30-Math.floor(p/2000)); if(first<0) first=p; }
+    }
+    if(score>0) hits.push({a,score,first:first<0?0:first});
+  }
+  hits.sort((x,y)=>y.score-x.score);
+  if(!hits.length) return '全库未检索到相关文章（可换关键词；或用 search_index 查分类索引、get_returns 取收益数据）';
+  return '全库命中 '+hits.length+' 篇，下面是相关度最高的 '+Math.min(k,hits.length)+' 篇（用 read_article 可读全文）：\n'+
+    hits.slice(0,k).map(({a,first})=>{
+      const plain=plainOf(a);
+      const s=Math.max(0,first-60), e=Math.min(plain.length,first+300);
+      const seg=(s>0?'…':'')+plain.slice(s,e).replace(/\s+/g,' ')+(e<plain.length?'…':'');
+      return '- ['+a.id+'] 《'+a.title+'》'+(a.year?'（'+a.year+'）':'')+'｜'+(CAT_NAME[a.catKey]||a.catKey)+'\n  片段：'+seg;
+    }).join('\n');
+}
+
+function toolReadArticle(args){
+  const key=((args.id||args.title||'')+'').trim();
+  if(!key) return '缺少 id 或 title 参数（可先用 search_articles 检索）';
+  let a=BYID[key];
+  if(!a){ const kw=key.toLowerCase(); a=ART.find(x=>x.title.toLowerCase().includes(kw))||ART.find(x=>x.id.toLowerCase()===kw); }
+  if(!a) return '未找到文章：'+key+'（请先用 search_articles 取得准确 id）';
+  const chars=Math.min(Math.max(parseInt(args.chars)||6000,800),16000);
+  const offset=Math.max(parseInt(args.offset)||0,0);
+  const plain=plainOf(a);
+  const seg=plain.slice(offset,offset+chars);
+  return '《'+a.title+'》'+(a.year?'（'+a.year+'）':'')+'｜'+(CAT_NAME[a.catKey]||'')+'｜全文 '+plain.length+' 字，本次返回 '+offset+'–'+(offset+seg.length)+' 字\n\n'+seg+
+    (offset+seg.length<plain.length?'\n\n…（未读完，可加大 chars 或用 offset 续读）':'');
+}
+
+function toolSearchIndex(args){
+  const year=parseInt(args.year)||0;
+  const q=((args.query||args.q||'')+'').trim().toLowerCase();
+  const dim=(args.dim||'').trim();
+  const out=[];
+  if(year){
+    (IDX.year||[]).filter(r=>r.y===year).forEach(r=>{
+      out.push('【年度索引】'+r.y+'｜信件：'+((r.letters||[]).join('、')||'—')+
+        '\n  核心摘要：'+(r.s||'—')+'\n  市场事件：'+(r.e||'—')+
+        '\n  坎宁安主题：'+((r.t||[]).join('、')||'—')+'\n  原文链接：'+(r.u||'—'));
+    });
+  }
+  if(q){
+    const dims=dim?[dim]:['topic','industry','event','method'];
+    const names=IDX_DIM_NAME;
+    dims.forEach(d=>{
+      (IDX[d]||[]).forEach(item=>{
+        if(JSON.stringify(item).toLowerCase().includes(q)){
+          out.push('【'+(names[d]||d)+'】'+(item.k||item.name||'')+'：'+((item.d||item.desc||item.s||'')+'').slice(0,500));
+        }
+      });
+    });
+  }
+  if(!out.length) return '索引中未找到匹配（可试 search_index(year=1974)，或 dim=topic|industry|event|method + query=关键词）';
+  return out.slice(0,8).join('\n\n');
+}
+
+function toolGetReturns(args){
+  const from=parseInt(args.from)||1957, to=parseInt(args.to)||2025;
+  const R=window.BUFFETT_RETURNS||[];
+  const rows=R.filter(r=>r[0]>=from&&r[0]<=to);
+  if(!rows.length) return '该区间没有数据（可用区间 1957–2025）';
+  const neg=rows.filter(r=>r[1]<0).map(r=>r[0]);
+  return '口径：1957–1964 为合伙基金收益率；1965–2025 为伯克希尔每股账面价值变动率'+
+    '（2019–2025 年报不再披露该指标，按各年 10-K 股东权益 ÷ 年末 A 股等值股本推算）。'+
+    '累计净值以 1956 年 = 1 复利计算，年化 = 累计净值^(1/第N年)−1。\n'+
+    rows.map(r=>r[0]+'：'+(r[1]>0?'+':'')+r[1].toFixed(1)+'%（累计 '+r[2]+'×，年化 '+r[3]+'%）').join('\n')+
+    '\n负增长年份：'+(neg.length?neg.join('、'):'无');
+}
+
+async function toolWebSearch(args){
+  const q=((args.query||args.q||'')+'').trim();
+  if(!q) return '缺少 query 参数';
+  const k=Math.min(Math.max(parseInt(args.k)||5,1),8);
+  try{
+    const r=await fetch('/api/websearch?q='+encodeURIComponent(q)+'&k='+k,{cache:'no-store',headers:webSearchHeaders()});
+    if(!r.ok) return '联网检索不可用（HTTP '+r.status+'）。提示：联网检索需要本地服务运行（应用内置），并配置搜索 API Key。';
+    const j=await r.json();
+    if(j.message && !(j.results||[]).length) return j.message;
+    return (j.results||[]).map((x,i)=>(i+1)+'. '+x.title+'\n   '+x.url+'\n   '+(x.snippet||'').slice(0,300)).join('\n');
+  }catch(e){ return '联网检索失败：'+(e&&e.message||e)+'（离线模式或本地服务未运行）'; }
+}
+
+async function toolFetchUrl(args){
+  const url=((args.url||'')+'').trim();
+  if(!/^https?:\/\//i.test(url)) return 'url 参数无效（需以 http/https 开头）';
+  try{
+    const r=await fetch('/api/fetch?url='+encodeURIComponent(url),{cache:'no-store',headers:webSearchHeaders()});
+    if(!r.ok) return '抓取失败（HTTP '+r.status+'）';
+    const j=await r.json();
+    if(j.message) return j.message;
+    const chars=Math.min(Math.max(parseInt(args.chars)||6000,1000),12000);
+    return '《'+(j.title||url)+'》\n'+(j.text||'').slice(0,chars);
+  }catch(e){ return '抓取失败：'+(e&&e.message||e); }
+}
+
+const RESEARCH_TOOLS={
+  search_articles:{label:'全库检索', fn:toolSearchArticles, desc:'在全部 188 篇文章中检索关键词，返回文章与命中片段'},
+  read_article:{label:'精读文章', fn:toolReadArticle, desc:'读取指定文章全文（id/title + chars/offset 分段）'},
+  search_index:{label:'分类索引', fn:toolSearchIndex, desc:'取某年信件摘要/市场事件/主题/原文链接，或检索主题/行业/事件/方法维度'},
+  get_returns:{label:'收益数据', fn:toolGetReturns, desc:'读取权威收益序列（1957–2025 逐年变动率/累计/年化）与负增长年份'},
+  web_search:{label:'联网检索', fn:toolWebSearch, desc:'检索外部资料（标题/网址/摘要），用于核实语料之外的事实'},
+  fetch_url:{label:'抓取网页', fn:toolFetchUrl, desc:'抓取指定网址正文（自动去除脚本/样式）'},
+};
+
+function looksLikeToolCall(text){ return /```\s*(?:tool|json)\b|"tool"\s*:/.test(text||''); }
+
+/* 预检索：回答前先自动全库检索一次，把命中的其他文章塞进上下文，
+   即使模型不主动调用工具，也天然知道「库里还有什么」——回答不再局限于当前文章。 */
+function prefetchContext(question, hint){
+  try{
+    const q=[question||'', hint||''].join(' ').replace(/\s+/g,' ').trim();
+    if(!q) return '';
+    const r=toolSearchArticles({query:q,k:4});
+    if(/^全库未检索|^缺少/.test(r)) return '';
+    return '【系统预检索】提问前已自动检索全库，以下文章可能相关（需要时用 read_article 精读；这只是候选，可用 search_articles 换关键词深入）：\n'+r.slice(0,2500);
+  }catch(e){ return ''; }
+}
+
+function parseToolCalls(text){
+  const out=[];
+  const re=/```(?:tool|json)?\s*([\s\S]*?)```/g;
+  let m;
+  while((m=re.exec(text||''))){
+    const body=(m[1]||'').trim();
+    if(!body || !/[[{]/.test(body)) continue;
+    let data=null;
+    try{ data=JSON.parse(body); }
+    catch(e){ try{ data=JSON.parse(body.replace(/,\s*([}\]])/g,'$1')); }catch(e2){ continue; } }
+    (Array.isArray(data)?data:[data]).forEach(x=>{
+      if(x && x.tool && RESEARCH_TOOLS[x.tool]) out.push({tool:x.tool,args:x.args||x.arguments||{}});
+    });
+  }
+  return out;
+}
+
+async function executeTools(calls,onStatus){
+  const parts=[], trace=[];
+  for(const c of calls){
+    const def=RESEARCH_TOOLS[c.tool];
+    if(onStatus) onStatus('🔎 '+def.label+'…');
+    let out='';
+    try{ out=await def.fn(c.args||{}); }
+    catch(e){ out='工具执行失败：'+(e&&e.message||e); }
+    out=String(out===undefined?'':out).slice(0,RESEARCH.resultChars);
+    const bad=/^(缺少|未找到|全库未检索|索引中未找到|该区间没有|联网检索失败|联网检索不可用|抓取失败|url 参数无效|工具执行失败)/.test(out.trim());
+    trace.push({tool:c.tool,label:def.label,args:c.args||{},ok:!bad});
+    parts.push('【'+def.label+'（'+c.tool+'）｜参数：'+JSON.stringify(c.args||{})+'】\n'+out);
+  }
+  return {text:parts.join('\n\n'),trace};
+}
+
+function traceMarkdown(trace,rounds){
+  if(!trace||!trace.length) return '';
+  const lines=trace.map(t=>'- '+t.label+'（'+t.tool+'）'+JSON.stringify(t.args)+' → '+(t.ok?'✅':'⚠️'));
+  return '\n\n---\n**🔍 研究过程**（'+rounds+' 轮推理，'+trace.length+' 次工具调用）\n'+lines.join('\n');
+}
+
+/* 研究循环：模型可请求工具 → 前端执行 → 回灌结果 → 继续，直到给出最终答案 */
+async function runResearchLoop(opts){
+  const maxRounds=opts.maxRounds||RESEARCH.maxRounds;
+  const onDelta=opts.onDelta, onStatus=opts.onStatus;
+  let convo=(opts.messages||[]).slice();
+  const trace=[];
+  for(let round=1; round<=maxRounds; round++){
+    let sawTool=false;
+    const raw=await callLLMStream(convo, acc=>{
+      if(looksLikeToolCall(acc)){
+        if(!sawTool){ sawTool=true; if(onDelta) onDelta(''); }   // 工具轮不渲染给用户
+        return;
+      }
+      if(!sawTool && onDelta) onDelta(acc);
+    });
+    const calls=parseToolCalls(raw);
+    if(!calls.length) return {text:raw,trace,rounds:round};
+    if(!sawTool && onDelta) onDelta('');
+    if(onStatus) onStatus('🧰 正在调用：'+calls.map(c=>RESEARCH_TOOLS[c.tool].label).join('、'));
+    const res=await executeTools(calls,onStatus);
+    res.trace.forEach(t=>trace.push(t));
+    convo=convo.concat([
+      {role:'assistant',content:raw},
+      {role:'user',content:'【工具结果】\n'+res.text+
+        '\n\n请继续：证据充分就直接给出最终答案（不要再输出工具块）；仍不足可再请求工具（剩余 '+
+        Math.max(0,maxRounds-round)+' 轮）。'},
+    ]);
+    if(onStatus) onStatus('🧠 综合证据中…');
+  }
+  convo.push({role:'user',content:'请立即基于已获得的证据给出最终答案，不要再请求工具。'});
+  const final=await callLLMStream(convo, onDelta);
+  return {text:final,trace,rounds:maxRounds+1};
+}
+
+/* 作答标准：注入到每个问答场景的系统提示 */
+const RESEARCH_PROMPT=[
+  '【研究工作流（必须遵守）】',
+  '你可以调用工具检索证据，凡可核查的事实与数字都不要凭记忆回答：',
+  '- 全库检索：search_articles(query,k) 在 188 篇文章中检索；read_article(id,chars,offset) 精读全文；',
+  '- 结构化事实：search_index(year=1974) 取该年信件摘要/市场事件/主题/原文链接；search_index(query=,dim=topic|industry|event|method) 查分类索引；',
+  '- 数据取数：get_returns(from,to) 读取权威收益序列（1957–2025 逐年每股账面价值变动率/累计/年化）；',
+  '- 联网核实：web_search(query,k) 检索外部资料，fetch_url(url) 抓取网页正文（语料不足或需核实外部事实时使用）。',
+  '作答标准：',
+  '1) 先查证再回答：至少先做一次全库检索；涉及收益/估值/年份/金额等数字必须用工具取数，不得凭印象；',
+  '2) 交叉验证：关键事实尽量两个来源（语料＋索引/联网）；来源冲突要说明差异与原因（常见于口径不同，例如每股账面价值 vs 每股市场价值）；',
+  '3) 口径意识：给数字必须写明口径、区间与算法（例：1965–2025 每股账面价值变动率，2019–2025 按 10-K 权益 ÷ A 股等值股本推算）；',
+  '4) 不编造：语料与检索结果没有的，明确写「语料中没有，以下为框架推演」；引用原文用「」并给出来源（文章标题＋年份，或信件年份；联网给网址）；',
+  '5) 输出结构：① 结论先行 ② 证据链（数字/原文引用/出处） ③ 口径、局限与分歧 ④ 可操作建议（结合 A 股：因子、过滤规则、仓位、风控、验证方法）。',
+  '工具调用格式（独立成段，可一次请求多个）：',
+  '```tool',
+  '[{"tool":"search_articles","args":{"query":"护城河 定价权","k":6}}]',
+  '```',
+  '收到工具结果后继续推理；证据充分后直接给出最终答案，不要再输出工具块（最多 5 轮）。',
+].join('\n');
+
 $('#aiSend').onclick=sendAi;
 $('#aiInputBox').addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); sendAi(); }
@@ -2452,7 +2705,7 @@ function renderChatView(){
   } else $('#chatChips').innerHTML='';
   box.scrollTop=box.scrollHeight;
 }
-function buildChatMessages(userText,mode=chatMode){
+function buildChatMessages(userText,mode=chatMode, prefetch){
   const isM=mode==='munger';
   const persona=((isM?DATA.mungerPersona:DATA.buffettPersona)||'').slice(0,14000);
   const sys=[
@@ -2462,6 +2715,7 @@ function buildChatMessages(userText,mode=chatMode){
     '【角色与人格（persona）】',
     persona,
     '【附加规则】',
+    '0. 你的语料 = 全部 188 篇文章（1956–2025 信件＋概念/公司/人物词条）＋五维分类索引＋1957–2025 收益数据；请用工具（search_articles / read_article / search_index / get_returns）自行检索核对，不要凭记忆引用；外部事实可用 web_search 核实并注明来源；',
     ...(isM ? [
       '1. 用芒格的口吻与框架回答：毒舌直白、三连词（"自大、愚蠢、疯狂"）、格言化收尾、自嘲式认错（"我和沃伦犯过很多错"）、政治不正确；',
       '2. 先按 Agentic Protocol 研究再回答：逆向思维（怎样会失败）→ 激励机制 → 能力圈 → 25 种误判清单 → 机会成本 → 复利时间视角；',
@@ -2475,8 +2729,10 @@ function buildChatMessages(userText,mode=chatMode){
       '4. 回答不构成投资建议；涉及用户具体持仓时给出分析框架而非买卖指令；',
       '5. 中文回答，结构清晰；用户说「退出」时简短告别。'
     ]),
+    RESEARCH_PROMPT,
   ].join('\n');
   const msgs=[{role:'system',content:sys}];
+  if(prefetch) msgs.push({role:'user',content:prefetch});
   chatMsgs(mode).filter(m=>(m.role==='user'||(m.role==='assistant'&&!m.pending))).slice(-12)
     .forEach(m=>msgs.push({role:m.role,content:m.content.slice(0,3000)}));
   msgs.push({role:'user',content:userText});
@@ -2492,7 +2748,7 @@ async function sendChat(){
   const text=box.value.trim();
   if(!text){ toast('请输入问题'); return; }
   if(!settingsOk()){ openSettings(); return; }
-  const requestMessages=buildChatMessages(text,reqMode); // 只包含此前历史
+  const requestMessages=buildChatMessages(text,reqMode, prefetchContext(text, meta.name+' 致股东信')); // 只包含此前历史
   const msgs=chatMsgs(reqMode);
   msgs.push({role:'user',content:text,ts:Date.now()});
   const aidMsg={role:'assistant',content:'',pending:true,ts:Date.now()};
@@ -2506,21 +2762,25 @@ async function sendChat(){
   $('#chatStatus').textContent=meta.status+'（'+(settings().model.split('/').pop()||'')+'）';
   let saveTimer=null;
   try{
-    const reply=await callLLMStream(requestMessages, acc=>{
-      if(reqId!==chatRequestSeq[reqMode]) return;
-      aidMsg.content=acc;
-      if(chatMode===reqMode){
-        const el=$('#chatMsgs .ai-msg.assistant:last-of-type');
-        if(el) el.innerHTML=mdRich(acc);
-      }
-      if(!saveTimer){ saveTimer=setTimeout(()=>{
-        if(reqId===chatRequestSeq[reqMode]) saveChatMsgs(msgs,reqMode);
-        saveTimer=null;
-      },500); }
+    const res=await runResearchLoop({
+      messages:requestMessages,
+      onStatus:s=>{ if(reqId===chatRequestSeq[reqMode] && chatMode===reqMode) $('#chatStatus').textContent=s; },
+      onDelta:acc=>{
+        if(reqId!==chatRequestSeq[reqMode]) return;
+        aidMsg.content=acc;
+        if(chatMode===reqMode){
+          const el=$('#chatMsgs .ai-msg.assistant:last-of-type');
+          if(el) el.innerHTML=mdRich(acc);
+        }
+        if(!saveTimer){ saveTimer=setTimeout(()=>{
+          if(reqId===chatRequestSeq[reqMode]) saveChatMsgs(msgs,reqMode);
+          saveTimer=null;
+        },500); }
+      },
     });
     clearTimeout(saveTimer);
     if(reqId===chatRequestSeq[reqMode]){
-      aidMsg.content=reply; aidMsg.pending=false;
+      aidMsg.content=res.text+traceMarkdown(res.trace,res.rounds); aidMsg.pending=false;
       saveChatMsgs(msgs,reqMode);
       if(chatMode===reqMode) renderChatView();
     }
@@ -2787,6 +3047,8 @@ function openSettings(){
   // 服务端注入的 Key 只留在内存；输入框只回显用户主动保存的浏览器 Key。
   $('#setKey').value=local.key||'';
   $('#setModel').value=s.model;
+  $('#setSearchProvider').value=local.searchProvider||'bocha';
+  $('#setSearchKey').value=local.searchKey||'';
   $('#setHint').innerHTML = runtimeLlmConfig&&runtimeLlmConfig.key
     ? '已从本地服务器的同源 /api/llm-config 加载密钥（只在内存，不会回填或保存到 localStorage）。如需覆盖，可在此手动填写。'
     : (cfg
@@ -2799,7 +3061,9 @@ function closeSettings(){ $('#settingsModal').hidden=true; }
 $('#settingsBtn').onclick=openSettings;
 $('#setCancel').onclick=closeSettings;
 $('#setSave').onclick=()=>{
-  const next={base:$('#setBase').value.trim(),model:$('#setModel').value.trim()};
+  const next={base:$('#setBase').value.trim(),model:$('#setModel').value.trim(),
+              searchProvider:$('#setSearchProvider').value,
+              searchKey:$('#setSearchKey').value.trim()};
   const key=$('#setKey').value.trim();
   if(key) next.key=key;
   store.set(SETTINGS_KEY,next);
