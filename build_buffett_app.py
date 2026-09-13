@@ -651,10 +651,10 @@ select.tbtn{-webkit-appearance:none;appearance:none;padding-right:24px;
   border-radius:16px;border:1px solid var(--line2)}
 .home-hero .hh-icon{font-size:46px;line-height:1}
 .home-hero .hh-img{width:96px;height:96px;border-radius:18px;box-shadow:0 4px 16px rgba(139,111,71,.28);margin-bottom:2px}
-.home-hero .hh-chart-wrap{position:relative;width:min(1280px,100%);height:310px;margin:10px auto 4px}
+.home-hero .hh-chart-wrap{position:relative;width:min(1280px,100%);height:310px;margin:10px auto 0}
 .home-hero .hh-chart{width:100%;height:100%}
-.home-hero .chart-note{position:absolute;right:10px;top:4px;max-width:calc(100% - 20px);font-size:10px;line-height:1.35;
-  text-align:right;color:var(--ink3);z-index:5;pointer-events:none}
+.home-hero .chart-note{width:min(1280px,100%);margin:2px auto 6px;font-size:10px;line-height:1.4;
+  text-align:right;color:var(--ink3)}
 .home-hero h1{font:700 34px/1.4 var(--serif);color:var(--accent);margin:10px 0 6px}
 .home-hero .hh-sub{color:var(--ink2);font-size:14px}
 .hh-stats{display:flex;justify-content:center;gap:38px;margin:24px 0 20px;flex-wrap:wrap}
@@ -1665,7 +1665,8 @@ function renderHome(){
         '<div><b>'+nLetters+'</b><span>封信件</span></div>'+
         '<div><b>'+nTags.size+'</b><span>主题标签</span></div>'+
       '</div>'+
-      '<div class="hh-chart-wrap"><div class="hh-chart" id="heroChart"></div><div class="chart-note">口径：1957–1964 合伙基金收益率｜1965–2025 伯克希尔每股账面价值变动率（Book Value；2019–2025 按 10-K 股东权益 ÷ A 股等值股本推算）</div></div>'+
+      '<div class="hh-chart-wrap"><div class="hh-chart" id="heroChart"></div></div>'+
+      '<div class="chart-note">口径：1957–1964 合伙基金收益率｜1965–2025 伯克希尔每股账面价值变动率（Book Value；2019–2025 按 10-K 股东权益 ÷ A 股等值股本推算）</div>'+
       '<div class="hh-search"><input id="homeQ" placeholder="搜索文章、概念、公司、人物…" autocomplete="off"><button id="homeQGo">搜索</button></div>'+
     '</div>'+
     '<div class="chat-entry" data-chat="1">'+
