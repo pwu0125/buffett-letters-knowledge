@@ -1658,7 +1658,7 @@ function renderHome(){
         ? '<img class="hh-img" src="data:image/png;base64,'+APP_ICON_B64+'" alt="巴菲特">'
         : '<div class="hh-icon">🏛</div>')+
       '<h1>巴菲特投资智慧</h1>'+
-      '<div class="hh-sub">巴菲特致股东信知识库 · 1956–2025 · 完全离线 · 阅读 / 划线 / 笔记 / AI 讨论</div>'+
+      '<div class="hh-sub">巴菲特致股东信知识库 · '+DATA.yearRange.join('–')+' · 完全离线 · 阅读 / 划线 / 笔记 / AI 讨论</div>'+
       '<div class="hh-stats">'+
         '<div><b>'+ART.length+'</b><span>篇文章</span></div>'+
         '<div><b>'+(yMax-yMin+1)+'</b><span>年跨度</span></div>'+
@@ -2461,7 +2461,7 @@ function buildAiMessages(userText, prefetch){
   const sys=[
     '你是「巴菲特投资智慧助教」，服务于一位 A 股量化投资者（使用选股因子、仓位管理、回测与择时信号体系）。',
     '任务：帮助用户把巴菲特致股东信中的思想，结合到其股票投资实践中。',
-    '资料范围：你面前有全部 188 篇文章（含 1956–2025 全部信件、概念/公司/人物词条）、五维分类索引、以及 1957–2025 权威收益数据；可用工具检索与精读，必要时联网核实。用户当前正在阅读的【当前文章】只是起点，不必局限于此篇。',
+    '资料范围：你面前有全部 '+ART.length+' 篇文章（含 '+DATA.yearRange.join('–')+' 年收录的信件及概念/公司/人物词条）、五维分类索引、以及 1957–2025 权威收益数据；可用工具检索与精读，必要时联网核实。用户当前正在阅读的【当前文章】只是起点，不必局限于此篇。',
     '规则：',
     '1. 引用原文必须来自语料（可用 search_articles/read_article 检索全库核对），用「」括起，不得编造巴菲特没有表达过的观点；',
     '2. 每条建议给出「可操作步骤」或「如何验证」（如转化为选股条件、过滤规则、回测假设、仓位规则、风控阈值）；',
@@ -2738,7 +2738,7 @@ async function toolFetchUrl(args){
 }
 
 const RESEARCH_TOOLS={
-  search_articles:{label:'全库检索', fn:toolSearchArticles, desc:'在全部 188 篇文章中检索关键词，返回文章与命中片段'},
+  search_articles:{label:'全库检索', fn:toolSearchArticles, desc:'在全部 '+ART.length+' 篇文章中检索关键词，返回文章与命中片段'},
   read_article:{label:'精读文章', fn:toolReadArticle, desc:'读取指定文章全文（id/title + chars/offset 分段）'},
   search_index:{label:'分类索引', fn:toolSearchIndex, desc:'取某年信件摘要/市场事件/主题/原文链接，或检索主题/行业/事件/方法维度'},
   get_returns:{label:'收益数据', fn:toolGetReturns, desc:'读取权威收益序列（1957–2025 逐年变动率/累计/年化）与负增长年份'},
@@ -2837,7 +2837,7 @@ async function runResearchLoop(opts){
 const RESEARCH_PROMPT=[
   '【研究工作流（必须遵守）】',
   '你可以调用工具检索证据，凡可核查的事实与数字都不要凭记忆回答：',
-  '- 全库检索：search_articles(query,k) 在 188 篇文章中检索；read_article(id,chars,offset) 精读全文；',
+  '- 全库检索：search_articles(query,k) 在 '+ART.length+' 篇文章中检索；read_article(id,chars,offset) 精读全文；',
   '- 结构化事实：search_index(year=1974) 取该年信件摘要/市场事件/主题/原文链接；search_index(query=,dim=topic|industry|event|method) 查分类索引；',
   '- 数据取数：get_returns(from,to) 读取权威收益序列（1957–2025 逐年每股账面价值变动率/累计/年化）；',
   '- 联网核实：web_search(query,k) 检索外部资料，fetch_url(url) 抓取网页正文（语料不足或需核实外部事实时使用）。',
@@ -2931,11 +2931,11 @@ function buildChatMessages(userText,mode=chatMode, prefetch){
   const sys=[
     isM
       ? '你正在扮演「查理·芒格（celebrity-charlie-munger）」——一个基于芒格演讲文集（1986–2017）、Wesco 致股东信（1997–2009）与 Wesco/DJCO 年会问答（1999–2023）蒸馏的决策与判断框架助手。'
-      : '你正在扮演「巴菲特（celebrity-buffett）」——一个基于巴菲特致股东信知识库（1956–2025，81 封信件 + 35 概念 + 61 公司案例）蒸馏的投资决策与判断框架助手。',
+      : '你正在扮演「巴菲特（celebrity-buffett）」——一个基于巴菲特致股东信知识库（'+DATA.yearRange.join('–')+'；含合伙人信、股东信及特别信件）蒸馏的投资决策与判断框架助手。',
     '【角色与人格（persona）】',
     persona,
     '【附加规则】',
-    '0. 你的语料 = 全部 188 篇文章（1956–2025 信件＋概念/公司/人物词条）＋五维分类索引＋1957–2025 收益数据；请用工具（search_articles / read_article / search_index / get_returns）自行检索核对，不要凭记忆引用；外部事实可用 web_search 核实并注明来源；',
+    '0. 你的语料 = 全部 '+ART.length+' 篇文章（'+DATA.yearRange.join('–')+' 年收录的信件＋概念/公司/人物词条）＋五维分类索引＋1957–2025 收益数据；请用工具（search_articles / read_article / search_index / get_returns）自行检索核对，不要凭记忆引用；外部事实可用 web_search 核实并注明来源；',
     ...(isM ? [
       '1. 用芒格的口吻与框架回答：毒舌直白、三连词（"自大、愚蠢、疯狂"）、格言化收尾、自嘲式认错（"我和沃伦犯过很多错"）、政治不正确；',
       '2. 先按 Agentic Protocol 研究再回答：逆向思维（怎样会失败）→ 激励机制 → 能力圈 → 25 种误判清单 → 机会成本 → 复利时间视角；',
@@ -3845,7 +3845,7 @@ __CSS__
             <div class="ai-chips" id="aiChips"></div>
             <div class="ai-status" id="aiStatus"></div>
             <div class="ai-input" id="aiInput" style="display:none">
-              <textarea id="aiInputBox" rows="1" placeholder="问 AI：可检索全库 188 篇 + 联网核实（如「2022 年为何负增长？」）"></textarea>
+              <textarea id="aiInputBox" rows="1" placeholder="问 AI：可检索全库 + 联网核实（如「2022 年为何负增长？」）"></textarea>
               <button id="aiSend">发送</button>
             </div>
           </div>
